@@ -1,0 +1,357 @@
+---
+title: "PSTAT 174 Final Project"
+author: "Caleb Mazariegos mmazariegos@ucsb.edu"
+date: "2023-05-23"
+output:
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width = 6, fig.height = 3)
+```
+```{r, message=FALSE, include=FALSE}
+# Load the required packages
+library(vars)
+library(forecast)
+library(ggplot2)
+library(dplyr)
+```
+
+
+Abstract:
+This project utilizes a time series approach to analyze and forecast traffic patterns at four junctions. Through exploratory data analysis, trends, seasonality, and anomalies in traffic volume are identified. Forecasting models like ARIMA and SARIMA are applied to predict future traffic volumes at each junction, considering historical data and seasonal components. Seasonality analysis reveals recurring patterns, aiding in peak hour and season identification. Correlation analysis uncovers dependencies between junctions for better traffic management. Visualizations, such as time series plots and dashboards, effectively communicate findings. The project contributes to capacity planning and resource allocation, considering factors like weather and special events. This research offers insights into traffic management and urban planning, facilitating efficient infrastructure development.
+\newpage
+
+# Introduction
+
+Traffic congestion is rising in cities around the world. Contributing factors include expanding urban populations, aging infrastructure, inefficient and uncoordinated traffic signal timing and a lack of real-time data. The purpose of this project is to help understand peak traffic hours, it could also be valuable data for transportation policymakers and urban planners.This project will aim to achieve accurate traffic predictions using the box-jenkins method to find an adequate SARIMA model to forecast traffic. By leveraging historical traffic data, the project aims to develop a robust forecasting model that can provide reliable predictions of future traffic volumes.I chose this dataset because I have lived in Los Angeles most of my life, and traffic is a huge problem especially in Downtown Los Angeles. I think that analyses like this can be valuable in creating solutions to these issues. The findings from this study will contribute to improved traffic management strategies, aiding in efficient resource allocation and proactive decision-making.
+
+\newpage
+
+# Data
+The dataset that I am using contains over 48,000 observations of the number of vehicles each hour in four different junctions. The data was collected using sensors, therefore you will see traffic data from different time periods. The data was collected from 10/31/2015 to 06/30/2017, which is a time period of 1 year and 8 months. The data was collected using sensors and was collected hourly. Each observation has its individual ID. 
+
+I will drop the ID column, as we do not need it. I also converted the DateTime column into POSIXct format to make it easier to use. 
+
+```{r}
+path <- ("/cloud/project/traffic.csv")
+traffic_data <- read.csv(path)
+# Convert DateTime column to POSIXct format
+traffic_data$DateTime <- as.POSIXct(traffic_data$DateTime)
+traffic_data$Junction <- as.factor(traffic_data$Junction)
+
+# Selecting which variables to keep
+keeps <- c("DateTime","Junction", "Vehicles")
+traffic_data = traffic_data[keeps]
+head(traffic_data)
+```
+```{r}
+# Plot all junctions on one graph
+ggplot(traffic_data, aes(x = DateTime, y = Vehicles, color = Junction)) +
+  geom_line() +
+  labs(x = "DateTime", y = "Traffic Volume") +
+  scale_color_discrete(name = "Junction") 
+```
+
+The graph depicts the traffic volume over time for four different junctions. Each line represents a specific junction, and the color distinguishes between them. The x-axis shows the DateTime values, while the y-axis represents the traffic volume. The graph provides a visual representation of the traffic patterns and allows for easy comparison between the junctions. Based on the graph, we can see that junction 4 did not have any observations until 01/2017. This is important as it can skew the data since it has not been collected as long as the other 3 junctions. 
+
+The bar graph below further illustrates the number of observations for each junction in the dataset. From this we can confirm that junction 4 has a reduction of approximately 70.27% from the other junctions.
+
+```{r}
+# Count the number of observations for each junction
+junction_counts <- traffic_data %>% group_by(Junction) %>% summarise(Count = n())
+
+# Create the bar graph with count labels
+ggplot(junction_counts, aes(x = Junction, y = Count)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  geom_text(aes(label = Count), vjust = -0.5, color = "black", size = 4) +
+  labs(x = "Junction", y = "Observation Count") +
+  ggtitle("Number of Observations by Junction") +
+  coord_cartesian(ylim = c(0, max(junction_counts$Count) * 1.2))
+```
+# Traffic Volume by Junction
+The table above displays the mean, median, maximum, and minimum traffic volumes for each junction. It provides an overview of the traffic patterns at each junction and helps identify any significant differences.
+```{r}
+# Traffic volume by junction
+traffic_data %>%
+  group_by(Junction) %>%
+  summarise(mean_volume = mean(Vehicles), 
+            median_volume = median(Vehicles), 
+            max_volume = max(Vehicles), 
+            min_volume = min(Vehicles))
+
+```
+
+
+
+
+\newpage
+
+# Methodology
+
+The methodology employed in this project involves utilizing the Box-Jenkins method to identify and construct a suitable SARIMA model for traffic forecasting. I will also utilize spectral analysis because it allows us to understand the underlying patterns and frequencies present in the data. Traffic data often exhibits various repeating patterns and periods, such as daily, weekly, or seasonal fluctuations. 
+
+Firstly, using the Box-Jenkins method will be employed to determine the appropriate SARIMA model that can effectively capture the temporal and seasonal variations in the traffic data. The chosen model is trained using historical traffic data and validated using suitable evaluation metrics. Finally, the trained SARIMA model is utilized to forecast future traffic volumes, aiding in the understanding of peak traffic hours and facilitating informed decision-making for transportation policymakers and urban planners.
+
+I will begin by checking to make sure that my dataset is seasonal and nonstationary to obtain the most accurate model. The seasonality and nonstationarity will be visualized using a graph of the time series. 
+
+```{r}
+plot(traffic_data$DateTime, traffic_data$Vehicles, type = "l", xlab = "DateTime", ylab = "Traffic Volume")
+```
+
+From the graph, and the fact that the data was collected in consistent hourly interval, I can conclude that it is seasonal. Furthermore, from the graph I can conclude that the data is stationary. Since the data is seasonal and stationary, the SARIMA model is appropriate. 
+
+# SARIMA model
+
+## Preparing the data
+I start by converting the data into a time series object from the Vehicles column. I set the frequency to 24 because the data was collected hourly
+```{r}
+ts_data <- ts(traffic_data$Vehicles, frequency = 24)
+```
+## Training and Test split
+I now split the data into training and testing sets to help evaluate the performance of my model. I split the data by using 80% for training and the other 20% of the data for testing. 
+
+```{r}
+# Calculate the split index
+split_index <- floor(0.8 * length(ts_data))
+
+# Split the data
+train_data <- ts_data[1:split_index]
+test_data <- ts_data[(split_index + 1):length(ts_data)]
+
+
+```
+
+## ACF and PACF plots
+I start out by graphing the ACF and PACF plots to determine the appropriate (p,d,q)x(P,D,Q). Based on the decay seen in the ACF and the single spike seen in the PACF, the desired values are (0,0,0)x(1,0,0)
+
+```{r}
+par(mfrow=c(1,2))
+# ACF plot
+acf(log(train_data))
+
+# PACF plot
+pacf(log(train_data))
+```
+
+## Fitting the model
+I fit the SARIMA model using the (p,d,q)x(P,D,Q) values that I found using the ACF and PACF graphs. 
+```{r}
+# Fit the SARIMA model
+sarima_model <- arima(train_data, order = c(0, 0, 0), seasonal = c(1, 0, 0), 
+               xreg = NULL) 
+```
+
+
+## Generating Forecasts
+Forecasting traffic vs. the actual traffic values
+```{r}
+# Generate predictions
+predictions <- predict(sarima_model, n.ahead = length(test_data))
+
+```
+
+Turning the prediction data into a time series object 
+```{r}
+# Time series object for the predicted values
+pred_ts <- ts(predictions$pred, start = start(test_data), frequency = frequency(test_data))
+
+```
+
+
+
+# Spectral Analysis 
+
+The next method I chose to apply to my traffic dataset is spectral analysis because it allows me to examine the frequency components present in the data and identify any dominant periodic patterns. By analyzing the spectral density, which represents the distribution of power across different frequencies, I can gain insights into the underlying cyclic behavior of the traffic data.
+
+I did it by utilizing the Fast Fourier Transform (FFT) algorithm, which efficiently computes the spectral density. In R, I used the stats package's spec.pgram() function to perform the spectral analysis on my traffic data. This function takes a time series object as input and returns an estimate of the spectral density.
+
+Once the data was prepared, I called the spec.pgram() function and specified the desired arguments such as the window type, the number of frequency points, and any other relevant options. The function computed the periodogram, and provided an estimate of the spectral density.
+
+
+```{r, warning=FALSE}
+require(zoo)
+t1 <- zoo(traffic_data$Vehicles, order.by=traffic_data$DateTime)
+plot(t1, xlab="Date", ylab="# of Vehicles")
+
+```
+## Residuals of Spectral Analysis 
+By comparing the Fourier model's predictions with the actual traffic data, we can determine the parts of the data that the spectral analysis model couldn't explain. These residuals show any remaining irregularities or unexpected behavior in the data, allowing us to evaluate the accuracy of the spectral analysis model and identify areas where it can be improved. 
+```{r}
+spectra <- c(ts_data)
+freq <- 1:length(spectra)
+
+# Fourier model
+model <- lm(spectra ~ freq)
+
+# Extract the residuals
+spectral_residuals <- residuals(model)
+
+```
+
+
+
+
+# SARIMA plots
+
+
+## Residuals of SARIMA
+The red line in this graph represents the expected values. 
+```{r}
+# Compute the residuals
+residuals <- test_data - predictions$pred
+
+# Plot the residuals
+# Plot the residuals
+plot(residuals, main = "Residuals of SARIMA Model", xlab = "Time", ylab = "Residuals", type = "p", pch = 16)
+abline(h = 0, col = "red", lwd = 2)
+
+```
+
+## QQ plot of SARIMA residuals
+The red line represents the residuals from the SARIMA model which includes all of the junctions. The residuals seem to follow a normal distribution for most of the plot, it starts to deviate from normality around the theoretical quantile of 2, which indicates it is skewed right. 
+```{r}
+# QQ plot
+qqnorm(residuals, main = "QQ Plot of SARIMA Residuals")
+qqline(residuals, col = "red")
+```
+
+
+# SARIMA junction models
+## SARIMA models and plots for the 4 separate junctions
+Splitting the junctions in SARIMA modeling allows for a more targeted and specific analysis of each junction's traffic patterns. By treating each junction as a separate time series, we can capture the unique characteristics and dynamics of traffic behavior at individual locations. This approach recognizes that different junctions may have distinct trends, seasonality, and other factors that can influence their traffic patterns. By modeling each junction separately, we can develop tailored SARIMA models that account for the specific dynamics and variations observed at each junction, leading to more accurate and reliable traffic forecasts and insights.
+```{r}
+library(forecast)
+library(ggplot2)
+
+
+# Assuming the column names in your CSV file are DateTime, Junction, Vehicles, and ID
+# Convert the DateTime column to a proper time series object
+traffic_data$DateTime <- as.POSIXct(traffic_data$DateTime)
+
+# Split the data by junctions
+junctions <- split(traffic_data, traffic_data$Junction)
+
+
+for (i in 1:length(junctions)) {
+  # Extract the data for the current junction
+  current_junction <- junctions[[i]][c("DateTime", "Vehicles")]
+  
+  # Convert the data to a time series object
+  ts_data <- ts(current_junction$Vehicles, frequency = 24)
+  
+  # Fit a SARIMA model
+  sarima_model <- auto.arima(ts_data)
+  
+  # Generate forecasts for the next 24 periods
+  forecasts <- forecast(sarima_model, h = 24)
+  
+  # Plot the actual data, forecasts, and prediction intervals
+  plot(forecasts, main = paste("Junction", i), xlab = "Time", ylab = "Traffic Count")
+ 
+  # Extract the actual data for the current junction
+  actual_data <- ts_data[(length(ts_data) - 23):length(ts_data)]
+  
+  # Add a line for expected vs. actual values
+  lines(actual_data, col = "blue", lwd = 2)
+  lines(forecasts$mean, col = "red", lwd = 2)
+  
+  legend("topright", legend = c("Actual", "Expected"),
+         col = c("blue", "red"), lwd = 2)
+}
+
+
+
+
+
+```
+
+
+# Spectral Analysis plots
+The spectral density represents the strength or intensity of each frequency component in the signal. It helps identify the dominant frequencies and their relative contributions to the overall signal. The spectral density is often visualized using a plot called the power spectrum or periodogram.
+
+The power spectrum plot displays the spectral density as a function of frequency. The x-axis represents the frequency, usually measured in cycles per unit time, while the y-axis represents the power or energy at each frequency. The power spectrum provides insights into the frequency characteristics of the signal, such as the presence of periodic patterns, trends, or other patterns in the data.
+```{r}
+# Plot the periodogram
+plot(spec, main = "Periodogram of Traffic Data", xlab = "Frequency", ylab = "Spectral Density")
+
+```
+The frequency bandwidth of the periodogram of traffic data is very narrow. The bandwidth of 7.42e-06 indicates that the periodogram can effectively separate and estimate the power at frequencies that are 7.42e-06 units apart. The smaller the bandwidth, the more precise the frequency estimation becomes.
+
+## Spectral Analysis of the Test Data
+```{r}
+spec <- spec.pgram(test_data)
+```
+
+## Spectral Analysis Residuals plot
+In this plot, I notice a few major spikes. This indicates a significant deviation between the predicted values which were generated by the spectral analysis model and the actual observed values of the traffic data.There are only a few that stick out, but this provides insights into the limitations or deficiencies of the spectral analysis model.
+```{r}
+# Plot the residuals
+plot(freq, spectral_residuals, type = "l", xlab = "Frequency", ylab = "Residuals")
+
+# Add a horizontal line at y = 0
+abline(h = 0, col = "red")
+```
+
+## QQ plot of residuals of Spectral Analysis
+The red line represents the residuals, if the points follow the line it means that the residuals follow normally. Since we see it following the line until around theoretical quantile 2, I can conclude that the residuals are normal, but they are skewed right. 
+```{r}
+# Create a QQ plot of the residuals
+qqnorm(spectral_residuals)
+qqline(spectral_residuals, col = "red")
+```
+
+
+
+# Results
+
+I decided to calculate the RMSE of both methods used as a way to determine if they were successful in forecasting. The RMSE is just the square root of MSE which measures the average squared difference between the forecasted and actual values. A lower value indicates a better performance of the model. 
+## RMSE of SARIMA
+```{r}
+residuals <- test_data - pred_ts
+squared_residuals <- residuals^2
+mean_squared_residuals <- mean(squared_residuals)
+rmse <- sqrt(mean_squared_residuals)
+rmse
+```
+
+## RMSE of Spectral Analysis
+```{r}
+spectral_rmse <- sqrt(mean(spectral_residuals^2))
+spectral_rmse
+```
+In this case, the Spectral Analysis method was more successful in forecasting the traffic values. The rmse is much lower than the rmse that was obtained solely by SARIMA. 
+
+\newpage
+
+
+# Conclusion
+
+In this project, I analyzed and forecasted traffic patterns at four different junctions using the Box-Jenkins methodology and Spectral Analysis. Through exploratory data analysis, we identified trends and seasonality in the traffic volume. 
+
+Using SARIMA models, I  forecasted future traffic volumes at each junction, and also at every junction combined. The forecasting models considered historical data and the identified seasonal components. The comparison of actual and forecasted values demonstrated the accuracy of the models in capturing the future traffic patterns. 
+
+Using Spectral analysis, I examined the spectral density and examined the frequency components present in the data and used it to identify any dominant periodic patterns. I noticed some residual spikes, meaning that perhaps spectral analysis was not a very strong model and some parameters could have been adjusted.
+
+Both models have residuals that are normal, but are skewed to the right. This suggests that both models need to be refined and  the models tend to underestimate the response variable in certain cases, leading to larger positive errors. 
+
+Based on the RMSE, I can conclude that the Spectral analysis method was more effective in forecasting the traffic patterns. I believe that both models have the potential to be more accurate, certain parameters and adjustments need to be made to fix the skewness of the residuals. 
+
+These findings can contribute to capacity planning, resource allocation, and decision-making in traffic management and urban planning. By understanding peak traffic hours and forecasting future traffic volumes, transportation policymakers and urban planners can develop efficient strategies and infrastructure solutions.
+
+
+\newpage
+
+# References 
+
+Time Series and Spectral Analysis - Stanford University, web.stanford.edu/class/earthsys214/notes/series.html. Accessed 13 June 2023. 
+
+Bajaj, Aayush. “Arima &amp; Sarima: Real-World Time Series Forecasting.” Neptune.Ai, 19 Apr. 2023, neptune.ai/blog/arima-sarima-real-world-time-series-forecasting-guide. 
+
+
+
+
+
+
+
